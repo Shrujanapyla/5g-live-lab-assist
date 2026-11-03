@@ -225,13 +225,57 @@ footer {
   font-size: 12px;
 }
 
+/* Prevent padding and borders from increasing element width */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+#root {
+  min-width: 0;
+}
+
+
 @media (max-width: 560px) {
   .app {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     padding: 18px 14px;
+    overflow-x: clip;
   }
 
   .topbar {
     flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .topbar > div:not(.brand-mark) {
+  min-width: 0;
+  flex: 1;
+  }
+
+  .brand-mark {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  } 
+
+  .topbar p {
+    overflow-wrap: anywhere;
   }
 
   .status {
@@ -242,16 +286,66 @@ footer {
     padding: 40px 0 26px;
   }
 
+  .hero h2 {
+    font-size: clamp(28px, 8vw, 36px);
+    overflow-wrap: break-word;
+  }
+
+  .hero > p:last-child {
+    overflow-wrap: break-word;
+  }
+
   .panel {
+    width: 100%;
+    min-width: 0;
     padding: 20px;
   }
 
   .role-picker {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .role {
+    width: 100%;
     min-height: 120px;
+  }
+
+  .action-area {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .action-area input,
+  .primary-button,
+  .secondary-button {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .video-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .annotation-toolbar {
+    gap: 10px;
+  }
+
+  .annotation-toolbar button {
+    min-height: 44px;
+    padding: 10px 14px;
+  }
+
+  .snapshot-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .snapshot-card {
+    min-width: 0;
+  }
+
+  .session-code {
+    font-size: 26px;
+    letter-spacing: 4px;
   }
 }
 

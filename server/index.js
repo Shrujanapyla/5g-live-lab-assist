@@ -1,14 +1,13 @@
-
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
-const { randomInt } = require("crypto");
+const { randomInt, randomUUID } = require("crypto");
 
 const app = express();
 
 app.use(cors({ origin: "http://localhost:5173" }));
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 const server = http.createServer(app);
 
@@ -19,9 +18,60 @@ const io = new Server(server, {
   }
 });
 
-// Sessions are stored in memory for this prototype.
+// Store session data in memory.
 const sessions = new Map();
 
+const MAX_HISTORY = 500;
+
+function addHistory(session, action, snapshot, userId) {
+  session.historySequence += 1;
+
+  const entry = {
+    historyId: randomUUID(),
+    sequence: session.historySequence,
+    action,
+    snapshotId: snapshot.id,
+    snapshot: structuredClone(snapshot),
+    userId,
+    timestamp: new Date().toISOString()
+  };
+
+  session.snapshotHistory.push(entry);
+
+  if (session.snapshotHistory.length > MAX_HISTORY) {
+    session.snapshotHistory.shift();
+  }
+
+  return entry;
+}
+
+function getJoinedSession(socket) {
+  const code = socket.data.sessionCode;
+
+  if (!code) return null;
+
+  const session = sessions.get(code);
+
+  if (!session || !session.participants.has(socket.id)) {
+    return null;
+  }
+
+  return session;
+}
+
+function sendSnapshotError(socket, message) {
+  socket.emit("snapshot:error", { message });
+}
+
+function isValidObject(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  );
+}
+
+// Health check.
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -43,7 +93,10 @@ app.post("/api/sessions", (req, res) => {
   sessions.set(code, {
     code,
     createdAt: new Date().toISOString(),
-    participants: new Map()
+    participants: new Map(),
+    snapshots: new Map(),
+    snapshotHistory: [],
+    historySequence: 0
   });
 
   res.status(201).json({
@@ -70,10 +123,52 @@ app.post("/api/sessions/join", (req, res) => {
   });
 });
 
-// Join a real-time Socket.IO room.
+// Retrieve current snapshots.
+app.get("/api/sessions/:code/snapshots", (req, res) => {
+  const code = String(req.params.code).trim().toUpperCase();
+  const session = sessions.get(code);
+
+  if (!session) {
+    return res.status(404).json({
+      success: false,
+      message: "Session not found."
+    });
+  }
+
+  res.json({
+    success: true,
+    snapshots: [...session.snapshots.values()]
+  });
+});
+
+// Retrieve snapshot history.
+app.get("/api/sessions/:code/snapshots/history", (req, res) => {
+  const code = String(req.params.code).trim().toUpperCase();
+  const session = sessions.get(code);
+
+  if (!session) {
+    return res.status(404).json({
+      success: false,
+      message: "Session not found."
+    });
+  }
+
+  const requestedLimit = Number.parseInt(req.query.limit, 10);
+  const limit = Number.isInteger(requestedLimit)
+    ? Math.min(Math.max(requestedLimit, 1), MAX_HISTORY)
+    : 100;
+
+  res.json({
+    success: true,
+    history: session.snapshotHistory.slice(-limit)
+  });
+});
+
+// Socket.IO connection.
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
+  // Join a session.
   socket.on("join-session", ({ code, role } = {}) => {
     code = String(code || "").trim().toUpperCase();
 
@@ -93,15 +188,16 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // Allow only one professor in a session at a time.
-    if (role === "professor") {
-      const professorAlreadyPresent = [...session.participants.values()]
-        .some((participant) => participant.role === "professor");
+    const previousCode = socket.data.sessionCode;
 
-      if (
-        professorAlreadyPresent &&
-        session.participants.get(socket.id)?.role !== "professor"
-      ) {
+    // Prevent duplicate professor connections.
+    if (role === "professor") {
+      const professorAlreadyPresent = [...session.participants.entries()]
+        .some(([id, participant]) =>
+          id !== socket.id && participant.role === "professor"
+        );
+
+      if (professorAlreadyPresent) {
         socket.emit("session-error", {
           message: "A professor is already in this session."
         });
@@ -109,9 +205,7 @@ io.on("connection", (socket) => {
       }
     }
 
-    // Leave the previous room if this socket changes sessions.
-    const previousCode = socket.data.sessionCode;
-
+    // Leave the previous session when switching rooms.
     if (previousCode && previousCode !== code) {
       const previousSession = sessions.get(previousCode);
 
@@ -134,14 +228,18 @@ io.on("connection", (socket) => {
       }));
 
     session.participants.set(socket.id, { role });
+
     socket.data.sessionCode = code;
     socket.data.role = role;
+
     socket.join(code);
 
+    // Send the latest canonical snapshot state to the joining participant.
     socket.emit("session-joined", {
       code,
       role,
-      participants: existingParticipants
+      participants: existingParticipants,
+      snapshots: [...session.snapshots.values()]
     });
 
     socket.to(code).emit("participant-joined", {
@@ -151,11 +249,194 @@ io.on("connection", (socket) => {
 
     console.log(`${role} joined session ${code}`);
   });
-  
-  // WebRTC signaling: send call setup messages to the other participant.
+
+  // Create a snapshot.
+  socket.on("snapshot:create", ({ data, metadata = {} } = {}) => {
+    const session = getJoinedSession(socket);
+
+    if (!session) {
+      return sendSnapshotError(socket, "Join a session first.");
+    }
+
+    if (!isValidObject(data) || !isValidObject(metadata)) {
+      return sendSnapshotError(socket, "Invalid snapshot data or metadata.");
+    }
+
+    const now = new Date().toISOString();
+
+    const snapshot = {
+      id: randomUUID(),
+      sessionCode: session.code,
+      data: structuredClone(data),
+      metadata: structuredClone(metadata),
+      createdAt: now,
+      updatedAt: now,
+      createdBy: socket.id,
+      updatedBy: socket.id,
+      version: 1
+    };
+
+    session.snapshots.set(snapshot.id, snapshot);
+
+    const historyEntry = addHistory(
+      session,
+      "created",
+      snapshot,
+      socket.id
+    );
+
+    io.to(session.code).emit("snapshot:created", {
+      snapshot,
+      historyEntry
+    });
+  });
+
+  // Update an existing snapshot.
+  socket.on(
+    "snapshot:update",
+    ({ snapshotId, data, metadata, expectedVersion } = {}) => {
+      const session = getJoinedSession(socket);
+
+      if (!session) {
+        return sendSnapshotError(socket, "Join a session first.");
+      }
+
+      const snapshot = session.snapshots.get(snapshotId);
+
+      if (!snapshot) {
+        return sendSnapshotError(socket, "Snapshot not found.");
+      }
+
+      if (expectedVersion !== undefined &&
+          expectedVersion !== snapshot.version) {
+        socket.emit("snapshot:conflict", {
+          message: "Snapshot was changed by another participant.",
+          currentSnapshot: structuredClone(snapshot)
+        });
+        return;
+      }
+
+      if (data !== undefined && !isValidObject(data)) {
+        return sendSnapshotError(socket, "Invalid snapshot data.");
+      }
+
+      if (metadata !== undefined && !isValidObject(metadata)) {
+        return sendSnapshotError(socket, "Invalid snapshot metadata.");
+      }
+
+      if (data !== undefined) {
+        snapshot.data = structuredClone(data);
+      }
+
+      if (metadata !== undefined) {
+        snapshot.metadata = structuredClone(metadata);
+      }
+
+      snapshot.updatedAt = new Date().toISOString();
+      snapshot.updatedBy = socket.id;
+      snapshot.version += 1;
+
+      const historyEntry = addHistory(
+        session,
+        "updated",
+        snapshot,
+        socket.id
+      );
+
+      io.to(session.code).emit("snapshot:updated", {
+        snapshot,
+        historyEntry
+      });
+    }
+  );
+
+  // Delete a snapshot.
+  socket.on("snapshot:delete", ({ snapshotId } = {}) => {
+    const session = getJoinedSession(socket);
+
+    if (!session) {
+      return sendSnapshotError(socket, "Join a session first.");
+    }
+
+    const snapshot = session.snapshots.get(snapshotId);
+
+    if (!snapshot) {
+      return sendSnapshotError(socket, "Snapshot not found.");
+    }
+
+    const historyEntry = addHistory(
+      session,
+      "deleted",
+      snapshot,
+      socket.id
+    );
+
+    session.snapshots.delete(snapshotId);
+
+    io.to(session.code).emit("snapshot:deleted", {
+      snapshotId,
+      historyEntry
+    });
+  });
+
+  // Request snapshot history through Socket.IO.
+  socket.on("snapshot:history:request", () => {
+    const session = getJoinedSession(socket);
+
+    if (!session) {
+      return sendSnapshotError(socket, "Join a session first.");
+    }
+
+    socket.emit("snapshot:history", {
+      history: session.snapshotHistory
+    });
+  });
+
+  // Restore a previous snapshot version from history.
+  socket.on("snapshot:restore", ({ historyId } = {}) => {
+    const session = getJoinedSession(socket);
+
+    if (!session) {
+      return sendSnapshotError(socket, "Join a session first.");
+    }
+
+    const historyEntry = session.snapshotHistory.find(
+      (entry) => entry.historyId === historyId
+    );
+
+    if (!historyEntry) {
+      return sendSnapshotError(socket, "Snapshot history entry not found.");
+    }
+
+    const previousSnapshot = historyEntry.snapshot;
+
+    const restoredSnapshot = {
+      ...structuredClone(previousSnapshot),
+      updatedAt: new Date().toISOString(),
+      updatedBy: socket.id,
+      version: (session.snapshots.get(previousSnapshot.id)?.version || 0) + 1
+    };
+
+    session.snapshots.set(restoredSnapshot.id, restoredSnapshot);
+
+    const newHistoryEntry = addHistory(
+      session,
+      "restored",
+      restoredSnapshot,
+      socket.id
+    );
+
+    io.to(session.code).emit("snapshot:updated", {
+      snapshot: restoredSnapshot,
+      historyEntry: newHistoryEntry
+    });
+  });
+
+  // WebRTC signaling.
   socket.on("webrtc-offer", ({ offer } = {}) => {
     const code = socket.data.sessionCode;
-    if (code && offer) {
+
+    if (code && offer && getJoinedSession(socket)) {
       socket.to(code).emit("webrtc-offer", {
         offer,
         from: socket.id
@@ -165,7 +446,8 @@ io.on("connection", (socket) => {
 
   socket.on("webrtc-answer", ({ answer } = {}) => {
     const code = socket.data.sessionCode;
-    if (code && answer) {
+
+    if (code && answer && getJoinedSession(socket)) {
       socket.to(code).emit("webrtc-answer", {
         answer,
         from: socket.id
@@ -175,19 +457,20 @@ io.on("connection", (socket) => {
 
   socket.on("webrtc-ice-candidate", ({ candidate } = {}) => {
     const code = socket.data.sessionCode;
-    if (code && candidate) {
+
+    if (code && candidate && getJoinedSession(socket)) {
       socket.to(code).emit("webrtc-ice-candidate", {
         candidate,
         from: socket.id
       });
     }
   });
-  
-  // Relay drawing annotations to the other participant in the session.
+
+  // Relay drawing annotations.
   socket.on("annotation-update", ({ annotation } = {}) => {
     const code = socket.data.sessionCode;
 
-    if (!code || !annotation) return;
+    if (!code || !annotation || !getJoinedSession(socket)) return;
 
     socket.to(code).emit("annotation-update", {
       annotation,
@@ -195,17 +478,18 @@ io.on("connection", (socket) => {
     });
   });
 
-  // Clear annotations for both participants.
+  // Clear annotations.
   socket.on("annotation-clear", () => {
     const code = socket.data.sessionCode;
 
-    if (!code) return;
+    if (!code || !getJoinedSession(socket)) return;
 
     socket.to(code).emit("annotation-clear", {
       from: socket.id
     });
   });
 
+  // Handle participant disconnection.
   socket.on("disconnect", () => {
     const code = socket.data.sessionCode;
     const session = code ? sessions.get(code) : null;
@@ -222,6 +506,7 @@ io.on("connection", (socket) => {
   });
 });
 
+// Start server.
 server.listen(3000, () => {
   console.log("Backend running at http://localhost:3000");
 });

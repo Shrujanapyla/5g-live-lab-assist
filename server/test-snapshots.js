@@ -1,0 +1,169 @@
+const { io } = require("socket.io-client");
+
+const BASE_URL = "http://localhost:3000";
+
+function waitFor(socket, event) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Timeout waiting for ${event}`)),
+      5000
+    );
+
+    socket.once(event, (data) => {
+      clearTimeout(timer);
+      resolve(data);
+    });
+  });
+}
+
+async function main() {
+  let professor;
+  let student;
+
+  try {
+    // Create a session.
+    const response = await fetch(`${BASE_URL}/api/sessions`, {
+      method: "POST"
+    });
+
+    const result = await response.json();
+    const code = result.session.code;
+
+    console.log("Session created:", code);
+
+    // Connect professor and student.
+    professor = io(BASE_URL);
+    student = io(BASE_URL);
+
+    await Promise.all([
+      waitFor(professor, "connect"),
+      waitFor(student, "connect")
+    ]);
+
+    console.log("Both clients connected.");
+
+    // Join both participants to the session.
+    const professorJoined = waitFor(professor, "session-joined");
+    const studentJoined = waitFor(student, "session-joined");
+
+    professor.emit("join-session", {
+      code,
+      role: "professor"
+    });
+
+    student.emit("join-session", {
+      code,
+      role: "student"
+    });
+
+    await Promise.all([professorJoined, studentJoined]);
+
+    console.log("Professor and student joined.");
+
+    // Test snapshot creation.
+    const created = waitFor(student, "snapshot:created");
+
+    professor.emit("snapshot:create", {
+      data: {
+        title: "Test Snapshot",
+        content: "Shared classroom workspace"
+      },
+      metadata: {
+        description: "First synchronization test"
+      }
+    });
+
+    const createdData = await created;
+    const snapshotId = createdData.snapshot.id;
+
+    console.log("PASS: Student received created snapshot.");
+
+    // Test snapshot update.
+    const updated = waitFor(student, "snapshot:updated");
+
+    professor.emit("snapshot:update", {
+      snapshotId,
+      data: {
+        title: "Updated Snapshot",
+        content: "Updated shared workspace"
+      },
+      expectedVersion: 1
+    });
+
+    const updatedData = await updated;
+
+    console.log(
+      "PASS: Student received update. Version:",
+      updatedData.snapshot.version
+    );
+
+    // Test history retrieval.
+    const historyReceived = waitFor(professor, "snapshot:history");
+
+    professor.emit("snapshot:history:request");
+
+    const history = await historyReceived;
+
+    console.log(
+      "PASS: History retrieved. Entries:",
+      history.history.length
+    );
+
+    // Test reconnection and state restoration.
+    student.disconnect();
+
+    const reconnectedStudent = io(BASE_URL);
+    student = reconnectedStudent;
+
+    await waitFor(student, "connect");
+
+    const restoredState = waitFor(student, "session-joined");
+
+    student.emit("join-session", {
+      code,
+      role: "student"
+    });
+
+    const restored = await restoredState;
+
+    console.log(
+      "PASS: Reconnected student received snapshots:",
+      restored.snapshots.length
+    );
+
+    // Test snapshot deletion.
+    const deleted = waitFor(student, "snapshot:deleted");
+
+    professor.emit("snapshot:delete", {
+      snapshotId
+    });
+
+    await deleted;
+
+    console.log("PASS: Student received snapshot deletion.");
+
+    // Verify final snapshot state through REST API.
+    const finalResponse = await fetch(
+      `${BASE_URL}/api/sessions/${code}/snapshots`
+    );
+
+    const finalResult = await finalResponse.json();
+
+    console.log(
+      "PASS: Remaining snapshots:",
+      finalResult.snapshots.length
+    );
+
+    console.log("\nALL SNAPSHOT TESTS COMPLETED SUCCESSFULLY.");
+
+  } catch (error) {
+    console.error("\nTEST FAILED:", error.message);
+    process.exitCode = 1;
+
+  } finally {
+    if (professor) professor.disconnect();
+    if (student) student.disconnect();
+  }
+}
+
+main();

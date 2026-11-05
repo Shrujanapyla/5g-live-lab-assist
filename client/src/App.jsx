@@ -102,14 +102,25 @@ export default function App() {
       });
     });
 
+        // Update an existing snapshot or add it if it was restored.
     newSocket.on("snapshot:updated", ({ snapshot } = {}) => {
       if (!snapshot) return;
 
-      setSnapshots((previous) =>
-        previous.map((item) =>
-          item.id === snapshot.id ? toWorkspaceSnapshot(snapshot) : item
-        )
-      );
+      const updatedSnapshot = toWorkspaceSnapshot(snapshot);
+
+      setSnapshots((previous) => {
+        const existingIndex = previous.findIndex(
+          (item) => item.id === snapshot.id
+        );
+
+        if (existingIndex === -1) {
+          return [updatedSnapshot, ...previous];
+        }
+
+        return previous.map((item) =>
+          item.id === snapshot.id ? updatedSnapshot : item
+        );
+      });
     });
 
     newSocket.on("snapshot:deleted", ({ snapshotId } = {}) => {
@@ -120,32 +131,10 @@ export default function App() {
       );
     });
 
-    // Rebuild the visible snapshot list from the session's history.
+        // Receive history without replacing the current snapshot list.
     newSocket.on("snapshot:history", ({ history } = {}) => {
-      const snapshotsById = new Map();
-      const orderedHistory = [...(history || [])].sort(
-        (a, b) => (a.sequence || 0) - (b.sequence || 0)
-      );
-
-      orderedHistory.forEach((entry) => {
-        if (!entry?.snapshotId) return;
-
-        if (entry.action === "deleted") {
-          snapshotsById.delete(entry.snapshotId);
-        } else if (entry.snapshot) {
-          snapshotsById.set(entry.snapshotId, entry.snapshot);
-        }
-      });
-
-      setSnapshots(
-        Array.from(snapshotsById.values())
-          .reverse()
-          .map(toWorkspaceSnapshot)
-      );
-
       console.log("Snapshot history received:", history || []);
     });
-
     newSocket.on("snapshot:error", ({ message: errorMessage } = {}) => {
       setMessage(errorMessage || "Snapshot operation failed.");
     });

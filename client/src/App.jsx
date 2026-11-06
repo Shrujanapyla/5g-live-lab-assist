@@ -1,21 +1,63 @@
 import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import "./App.css";
+import { MultiRoiWorkspace } from "./features/workspace";
 
-const SERVER_URL = "http://localhost:3000";
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || "http://localhost:3000";
 const RTC_CONFIG = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
-function toWorkspaceSnapshot(snapshot) {
+function toWorkspaceRoi(snapshot, index, history = []) {
+  const matchingHistory = history
+    .filter(
+      (entry) =>
+        entry.snapshotId === snapshot.id &&
+        entry.snapshot?.data?.image
+    )
+    .map((entry) => ({
+      id: entry.historyId,
+      snapshotId: snapshot.id,
+      src: entry.snapshot.data.image,
+      capturedAt:
+        entry.timestamp ||
+        entry.snapshot.metadata?.createdAt ||
+        entry.snapshot.createdAt ||
+        Date.now(),
+      version: entry.snapshot.version,
+    }))
+    .sort(
+      (a, b) =>
+        new Date(b.capturedAt).getTime() -
+        new Date(a.capturedAt).getTime()
+    );
+
+  // Use the backend snapshot itself if history has not arrived yet.
+  const versions = matchingHistory.length
+    ? matchingHistory
+    : [
+        {
+          id: snapshot.id,
+          snapshotId: snapshot.id,
+          src: snapshot.data?.image || snapshot.image || '',
+          capturedAt:
+            snapshot.metadata?.createdAt ||
+            snapshot.createdAt ||
+            Date.now(),
+          version: snapshot.version,
+        },
+      ];
+
+  const currentVersion = versions.find(
+    (version) => version.version === snapshot.version
+  );
+
   return {
     id: snapshot.id,
-    image: snapshot.data?.image || "",
-    width: snapshot.metadata?.width || 0,
-    height: snapshot.metadata?.height || 0,
-    createdAt:
-      snapshot.metadata?.createdAt || snapshot.createdAt || "",
-    version: snapshot.version,
+    backendId: snapshot.id,
+    label: `ROI ${index + 1}`,
+    snapshots: versions,
+    activeSnapshotId: currentVersion?.id || versions[0]?.id,
   };
 }
 
@@ -37,10 +79,12 @@ export default function App() {
   const [annotations, setAnnotations] = useState([]);
   const [selectedColor, setSelectedColor] = useState("#ff3333");
   const [snapshots, setSnapshots] = useState([]);
+  const [snapshotHistory, setSnapshotHistory] = useState([]);
   const [isCapturing, setIsCapturing] = useState(false);
   const [selectionRect, setSelectionRect] = useState(null);
 
   const peerRef = useRef(null);
+  const workspaceRef = useRef(null);
   const pendingCandidatesRef = useRef([]);
   const canvasRef = useRef(null);
   const videoRef = useRef(null);
@@ -64,7 +108,8 @@ export default function App() {
     newSocket.on("session-joined", (data) => {
       setParticipants(data.participants || []);
       setActiveSession(data.code);
-      setSnapshots((data.snapshots || []).map(toWorkspaceSnapshot));
+      setSnapshots(data.snapshots || []);
+      setSnapshotHistory([]);
       newSocket.emit("snapshot:history:request");
       setMessage(`Joined session ${data.code} as ${data.role}.`);
     });
@@ -90,61 +135,59 @@ export default function App() {
       setMessage(data.message || "Could not join the session.");
     });
 
-    // A snapshot created by either participant is shared with the room.
-    newSocket.on("snapshot:created", ({ snapshot } = {}) => {
+    newSocket.on("snapshot:created", ({ snapshot, historyEntry } = {}) => {
       if (!snapshot) return;
 
       setSnapshots((previous) => {
-        if (previous.some((item) => item.id === snapshot.id)) {
-          return previous;
-        }
-        return [toWorkspaceSnapshot(snapshot), ...previous];
+        const exists = previous.some((item) => item.id === snapshot.id);
+        return exists
+          ? previous.map((item) => item.id === snapshot.id ? snapshot : item)
+          : [snapshot, ...previous];
       });
+
+      if (historyEntry) {
+        setSnapshotHistory((previous) => [...previous, historyEntry]);
+      }
     });
 
-        // Update an existing snapshot or add it if it was restored.
-    newSocket.on("snapshot:updated", ({ snapshot } = {}) => {
+    newSocket.on("snapshot:updated", ({ snapshot, historyEntry } = {}) => {
       if (!snapshot) return;
 
-      const updatedSnapshot = toWorkspaceSnapshot(snapshot);
-
       setSnapshots((previous) => {
-        const existingIndex = previous.findIndex(
-          (item) => item.id === snapshot.id
-        );
-
-        if (existingIndex === -1) {
-          return [updatedSnapshot, ...previous];
-        }
-
-        return previous.map((item) =>
-          item.id === snapshot.id ? updatedSnapshot : item
-        );
+        const exists = previous.some((item) => item.id === snapshot.id);
+        return exists
+          ? previous.map((item) => item.id === snapshot.id ? snapshot : item)
+          : [snapshot, ...previous];
       });
+
+      if (historyEntry) {
+        setSnapshotHistory((previous) => [...previous, historyEntry]);
+      }
     });
 
-    newSocket.on("snapshot:deleted", ({ snapshotId } = {}) => {
+    newSocket.on("snapshot:deleted", ({ snapshotId, historyEntry } = {}) => {
       if (!snapshotId) return;
 
       setSnapshots((previous) =>
         previous.filter((item) => item.id !== snapshotId)
       );
+
+      if (historyEntry) {
+        setSnapshotHistory((previous) => [...previous, historyEntry]);
+      }
     });
 
-        // Receive history without replacing the current snapshot list.
     newSocket.on("snapshot:history", ({ history } = {}) => {
-      console.log("Snapshot history received:", history || []);
+      setSnapshotHistory(history || []);
     });
+
     newSocket.on("snapshot:error", ({ message: errorMessage } = {}) => {
       setMessage(errorMessage || "Snapshot operation failed.");
     });
 
-    newSocket.on(
-      "snapshot:conflict",
-      ({ message: conflictMessage } = {}) => {
-        setMessage(conflictMessage || "This snapshot changed elsewhere.");
-      }
-    );
+    newSocket.on("snapshot:conflict", ({ message: conflictMessage } = {}) => {
+      setMessage(conflictMessage || "This snapshot changed elsewhere.");
+    });
 
     // Shared annotation events.
     newSocket.on("annotation-update", ({ annotation } = {}) => {
@@ -214,6 +257,26 @@ export default function App() {
       peerRef.current = null;
     };
   }, []);
+
+  // Keep the multi-ROI workspace synchronized with backend snapshots/history.
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace || !activeSession) return;
+
+    const currentIds = new Set(snapshots.map((snapshot) => snapshot.id));
+
+    workspace.getRois().forEach((roi) => {
+      if (roi.backendId && !currentIds.has(roi.backendId)) {
+        workspace.removeRoi(roi.id);
+      }
+    });
+
+    snapshots.forEach((snapshot, index) => {
+      workspace.upsertRoi(
+        toWorkspaceRoi(snapshot, index, snapshotHistory)
+      );
+    });
+  }, [activeSession, snapshots, snapshotHistory]);
 
   // --------------------------------------------------
   // WEBRTC HELPERS
@@ -547,13 +610,35 @@ export default function App() {
     setMessage("Snapshot sent to the shared workspace.");
   }
 
-  function deleteSnapshot(snapshotId) {
+  function restoreWorkspaceSnapshot(roi, version) {
+    if (!socket?.connected || !activeSession) {
+      setMessage("Join a session before restoring a snapshot.");
+      return;
+    }
+
+    if (!version?.id || !roi?.backendId) {
+      setMessage("Could not identify the snapshot version.");
+      return;
+    }
+
+    socket.emit("snapshot:restore", { historyId: version.id });
+    setMessage("Restoring snapshot version...");
+  }
+
+  function removeWorkspaceRoi(roi) {
+    if (!roi.backendId) {
+      workspaceRef.current?.removeRoi(roi.id);
+      return;
+    }
+
     if (!socket?.connected || !activeSession) {
       setMessage("Join a session before removing a snapshot.");
       return;
     }
 
-    socket.emit("snapshot:delete", { snapshotId });
+    socket.emit("snapshot:delete", {
+      snapshotId: roi.backendId,
+    });
   }
 
   function clearAnnotations() {
@@ -609,6 +694,7 @@ export default function App() {
     setActiveSession("");
     setAnnotations([]);
     setSnapshots([]);
+    setSnapshotHistory([]);
 
     try {
       const response = await fetch(`${SERVER_URL}/api/sessions`, {
@@ -641,6 +727,7 @@ export default function App() {
     setActiveSession("");
     setAnnotations([]);
     setSnapshots([]);
+    setSnapshotHistory([]);
 
     try {
       const code = sessionCode.trim().toUpperCase();
@@ -672,6 +759,7 @@ export default function App() {
     setParticipants([]);
     setAnnotations([]);
     setSnapshots([]);
+    setSnapshotHistory([]);
     setIsDrawing(false);
     setIsCapturing(false);
     setSelectionRect(null);
@@ -975,37 +1063,16 @@ export default function App() {
             in this session.
           </p>
 
-          {snapshots.length === 0 ? (
-            <p className="muted">No snapshots have been shared yet.</p>
-          ) : (
-            <div className="snapshot-grid">
-              {snapshots.map((snapshot, index) => (
-                <article className="snapshot-card" key={snapshot.id}>
-                  <img
-                    src={snapshot.image}
-                    alt={`Shared snapshot ${index + 1}`}
-                  />
-                  <div className="snapshot-details">
-                    <strong>Snapshot {snapshots.length - index}</strong>
-                    <span>
-                      {snapshot.width} × {snapshot.height}px ·{" "}
-                      {snapshot.createdAt}
-                    </span>
-
-                    {role === "professor" && (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => deleteSnapshot(snapshot.id)}
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
+          <MultiRoiWorkspace
+            key={activeSession}
+            ref={workspaceRef}
+            initialRois={snapshots.map((snapshot, index) =>
+              toWorkspaceRoi(snapshot, index, snapshotHistory)
+            )}
+            onRemoveRoi={removeWorkspaceRoi}
+            onRestoreSnapshot={restoreWorkspaceSnapshot}
+            style={{ height: "720px", width: "100%" }}
+          />
         </section>
       )}
 

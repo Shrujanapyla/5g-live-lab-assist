@@ -109,6 +109,27 @@ async function main() {
       history.history.length
     );
 
+    // Restore the original version and verify a new version is broadcast.
+    const originalEntry = history.history.find(
+      (entry) => entry.action === "created"
+    );
+    if (!originalEntry) throw new Error("Original history entry was not found.");
+
+    const restoredUpdate = waitFor(student, "snapshot:updated");
+    professor.emit("snapshot:restore", {
+      historyId: originalEntry.historyId
+    });
+
+    const restoredUpdateData = await restoredUpdate;
+    if (restoredUpdateData.snapshot.data.title !== "Test Snapshot") {
+      throw new Error("Restore did not recover the original snapshot data.");
+    }
+    if (restoredUpdateData.snapshot.version !== 3) {
+      throw new Error("Restored snapshot version should be 3.");
+    }
+
+    console.log("PASS: Previous version restored and broadcast.");
+
     // Test reconnection and state restoration.
     student.disconnect();
 

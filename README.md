@@ -17,7 +17,9 @@ A real-time remote laboratory collaboration platform that connects students and 
 - **Real-Time Annotations:** Professors draw on the live video to guide students.
 - **Region of Interest (ROI):** Select and crop specific regions from the video.
 - **Snapshot Capture:** Capture important experiment details.
-- **Snapshot Workspace:** View captured snapshots during a laboratory session.
+- **Multi-ROI Workspace:** Open multiple captured regions in independent draggable and resizable panels.
+- **Independent Inspection:** Zoom and pan each ROI separately, add notes, and switch between snapshot versions.
+- **Shared Snapshot History:** Snapshot creation, updates, deletion, and restoration are synchronized between participants.
 
 ## Project Screenshots
 
@@ -140,7 +142,7 @@ npm install
 npm run dev
 ```
 
-The backend runs on port `3000`.
+The backend listens on port `3000` by default. Optional deployment settings are shown in `server/.env.example`; set `PORT` and `CLIENT_ORIGIN` in the environment when deploying.
 
 ### 3. Start the Frontend
 
@@ -155,6 +157,19 @@ npm run dev
 Open the Vite development URL, usually:
 
 `http://localhost:5173`
+
+The frontend uses `http://localhost:3000` by default. To point it at an edge backend, create `client/.env` from `client/.env.example` and set `VITE_SERVER_URL` to the backend's reachable URL before building/running Vite.
+
+### Backend integration test
+
+With the backend running in one terminal, run this in another:
+
+```bash
+cd server
+npm test
+```
+
+The test exercises session joining, snapshot creation and update, history retrieval, restoring an older version, reconnecting, and deleting a snapshot.
 
 ## Project Workflow
 
@@ -193,16 +208,23 @@ flowchart TD
 - [x] Real-time annotations
 - [x] ROI selection and cropping
 - [x] Snapshot capture
-- [x] Basic snapshot workspace
+- [x] Multiple independently manageable ROI panels
+- [x] Per-ROI zoom, pan, notes, and snapshot history
+- [x] Real-time workspace synchronization between participants
+- [x] Snapshot version restoration and shared deletion
+- [x] Backend integration test for create, update, history, restore, reconnect, and delete
+- [x] Configurable backend URL, port, and allowed frontend origin for deployment preparation
 
-## Future Enhancements
+## Remaining Work Before a Production / 5G Edge Demo
 
-- Persistent snapshot storage
-- Workspace synchronization between participants
-- Multiple independently manageable ROI panels
-- Edge-server deployment
-- Performance evaluation, including video latency, annotation delay, FPS, and dropped frames
-- Edge deployment versus cloud deployment comparison
+The following items require infrastructure access or further evaluation and are not claimed as completed:
+
+- **Durable storage:** Current sessions and snapshot history are held in server memory and are lost when the backend restarts. Add a database or persistent file store before using this beyond a demo.
+- **University edge deployment:** Deploy the Node.js backend on the university edge server, configure `PORT` and `CLIENT_ORIGIN`, and set the frontend `VITE_SERVER_URL` to the edge server address. This repository is still configured for local development by default; deployment has not been performed.
+- **Network traversal:** The current WebRTC configuration uses a public STUN server. A TURN server may be required when peers cannot establish a direct connection.
+- **Performance evaluation:** Measure connection setup time, video frame rate, end-to-end video delay, annotation delay, snapshot transfer time, and packet loss on both local and 5G/edge networks.
+- **Edge versus cloud comparison:** Repeat the same measurements against an edge-hosted backend and a cloud-hosted backend, then compare latency and reliability. The video itself currently uses peer-to-peer WebRTC; Socket.IO carries signaling, annotations, and snapshot/workspace events.
+- **Production hardening:** Add authentication/authorization, session expiry, payload limits appropriate to deployment, HTTPS, logging, and operational monitoring.
 
 ## Project Goal
 

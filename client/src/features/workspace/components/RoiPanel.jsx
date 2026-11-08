@@ -21,13 +21,19 @@ export default function RoiPanel({
   roi,
   bounds,
   compact,
+  stacked = false,
   focused,
   dispatch,
   onCapture,
   onRemove,
   onRestoreSnapshot,
+  onUpdateSnapshot,
+  canAnnotate = false,
 }) {
   const [drawer, setDrawer] = useState('notes');
+  const [expanded, setExpanded] = useState(false);
+  const [drawingEnabled, setDrawingEnabled] = useState(false);
+  const [drawColor, setDrawColor] = useState('#ff3333');
 
   const fileRef = useRef(null);
   const drag = useRef(null);
@@ -42,16 +48,43 @@ export default function RoiPanel({
       (snapshot) => snapshot.id === roi.activeSnapshotId
     ) ?? null;
 
+  const canEditActiveSnapshot =
+    Boolean(active && active.snapshotId && active.version === roi.backendVersion);
+
   const focus = () =>
     dispatch({
       type: 'FOCUS',
       id: roi.id,
     });
 
+  const handleGripDragStart = (event) => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/roi-id', roi.id);
+  };
+
+  const handlePanelDragOver = (event) => {
+    if (event.dataTransfer.types.includes('text/roi-id')) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+    }
+  };
+
+  const handlePanelDrop = (event) => {
+    const sourceId = event.dataTransfer.getData('text/roi-id');
+    if (!sourceId || sourceId === roi.id) return;
+    event.preventDefault();
+    dispatch({ type: 'REORDER', id: sourceId, targetId: roi.id });
+  };
+
   // Reposition panel.
   const startDrag = (event) => {
+    // Header controls must remain clickable; only the empty header area drags.
+    if (event.target.closest('button, input, textarea, select, a')) return;
     if (
       compact ||
+      stacked ||
+      expanded ||
       (event.pointerType === 'mouse' && event.button !== 0)
     ) {
       return;
@@ -97,7 +130,7 @@ export default function RoiPanel({
 
   // Resize panel.
   const startResize = (event) => {
-    if (compact) return;
+    if (compact || stacked) return;
 
     event.stopPropagation();
 
@@ -141,7 +174,7 @@ export default function RoiPanel({
 
   // Keyboard movement and resizing.
   const onGripKey = (event) => {
-    if (compact) return;
+    if (compact || stacked) return;
 
     const direction = {
       ArrowLeft: [-1, 0],
@@ -239,21 +272,25 @@ export default function RoiPanel({
   };
 
   // Panel styling.
-  const panelStyle = compact
+  const panelStyle = compact || stacked
     ? undefined
-    : {
-        left: layout.x,
-        top: layout.y,
-        width: layout.w,
-        height: layout.h,
-        zIndex: roi.z,
-      };
+    : expanded
+      ? { inset: 8, width: 'auto', height: 'auto', zIndex: 10000 }
+      : {
+          left: layout.x,
+          top: layout.y,
+          width: layout.w,
+          height: layout.h,
+          zIndex: roi.z,
+        };
 
   return (
     <section
-      className={`mrw-panel${focused ? ' is-focused' : ''}`}
+      className={`mrw-panel${focused ? ' is-focused' : ''}${expanded ? ' is-expanded' : ''}${stacked ? ' is-stacked' : ''}`}
       style={panelStyle}
       onPointerDown={focus}
+      onDragOver={stacked ? handlePanelDragOver : undefined}
+      onDrop={stacked ? handlePanelDrop : undefined}
       aria-label={`ROI panel: ${roi.label}`}
     >
       <header
@@ -263,14 +300,17 @@ export default function RoiPanel({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
       >
-        {!compact && (
+        {!compact && !expanded && (
           <button
             type="button"
             className="mrw-grip"
+            draggable={stacked}
+            onDragStart={stacked ? handleGripDragStart : undefined}
             onKeyDown={onGripKey}
-            aria-label="Move panel with arrow keys; shift and arrows to resize"
+            aria-label={stacked ? "Drag to reorder this ROI" : "Move panel with arrow keys; shift and arrows to resize"}
+            title={stacked ? "Drag to reorder ROI" : "Move ROI"}
           >
-            ::
+            ⠿
           </button>
         )}
 
@@ -291,9 +331,28 @@ export default function RoiPanel({
 
         <button
           type="button"
+          className="mrw-icon-btn mrw-panel__expand"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded((value) => !value);
+          }}
+          aria-label={expanded ? 'Restore panel size' : 'Expand panel'}
+          title={expanded ? 'Restore panel size' : 'Expand panel'}
+        >
+          {expanded ? '↙' : '↗'}
+        </button>
+        <button
+          type="button"
           className="mrw-icon-btn"
-          onClick={() => onRemove?.()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerUp={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove?.(roi);
+          }}
           aria-label="Remove ROI"
+          title="Close ROI"
         >
           X
         </button>
@@ -303,10 +362,55 @@ export default function RoiPanel({
         Captured: {formatTimestamp(active?.capturedAt)}
       </div>
 
+      {canAnnotate && active && (
+        <div className="mrw-draw-toolbar">
+          <button
+            type="button"
+            className={`mrw-btn${drawingEnabled ? ' mrw-btn--primary' : ''}`}
+            disabled={!canEditActiveSnapshot}
+            onClick={() => setDrawingEnabled((value) => !value)}
+          >
+            {drawingEnabled ? 'Finish drawing' : 'Draw'}
+          </button>
+          <input
+            type="color"
+            value={drawColor}
+            onChange={(event) => setDrawColor(event.target.value)}
+            aria-label="Snapshot drawing colour"
+            title="Drawing colour"
+          />
+          <button
+            type="button"
+            className="mrw-btn"
+            disabled={!canEditActiveSnapshot || !active.annotations?.length || drawingEnabled}
+            onClick={() => onUpdateSnapshot?.(roi, active, active.annotations.slice(0, -1))}
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            className="mrw-btn"
+            disabled={!canEditActiveSnapshot || !active.annotations?.length || drawingEnabled}
+            onClick={() => onUpdateSnapshot?.(roi, active, [])}
+          >
+            Clear
+          </button>
+          {!canEditActiveSnapshot && <span className="mrw-meta">Restore the latest version to annotate it.</span>}
+          {drawingEnabled && <span className="mrw-meta">Draw on the snapshot with your mouse</span>}
+        </div>
+      )}
+
       <RoiViewport
         src={active?.src}
         alt={roi.label}
         view={roi.view}
+        annotations={active?.annotations || []}
+        drawingEnabled={canAnnotate && canEditActiveSnapshot && drawingEnabled}
+        drawColor={drawColor}
+        onDrawComplete={(annotations) => {
+          setDrawingEnabled(false);
+          onUpdateSnapshot?.(roi, active, annotations);
+        }}
         onViewChange={(view) =>
           dispatch({
             type: 'VIEW',
@@ -380,7 +484,7 @@ export default function RoiPanel({
         />
       )}
 
-      {!compact && (
+      {!compact && !stacked && !expanded && (
         <div
           className="mrw-resize"
           onPointerDown={startResize}

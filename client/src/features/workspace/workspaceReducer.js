@@ -34,6 +34,8 @@ export function createRoi(input = {}, index = 0) {
       id: snapshot.id ?? uid(),
       snapshotId: snapshot.snapshotId ?? input.backendId ?? null,
       src: snapshot.src,
+      annotations: snapshot.annotations ?? [],
+      version: snapshot.version,
       capturedAt: snapshot.capturedAt ?? now,
     }));
   } else if (input.src) {
@@ -42,6 +44,8 @@ export function createRoi(input = {}, index = 0) {
         id: input.snapshotVersionId ?? uid(),
         snapshotId: input.backendId ?? null,
         src: input.src,
+        annotations: input.annotations ?? [],
+        version: input.version,
         capturedAt: input.capturedAt ?? now,
       },
     ];
@@ -58,6 +62,7 @@ export function createRoi(input = {}, index = 0) {
   return {
     id: input.id ?? uid(),
     backendId: input.backendId ?? null,
+    backendVersion: input.backendVersion ?? null,
     label: input.label ?? `ROI ${index + 1}`,
     note: input.note ?? '',
     noteUpdatedAt: input.noteUpdatedAt ?? null,
@@ -139,6 +144,16 @@ export function workspaceReducer(state, action) {
 
     case 'REMOVE':
       return state.filter((roi) => roi.id !== action.id);
+
+    case 'REORDER': {
+      const fromIndex = state.findIndex((roi) => roi.id === action.id);
+      const toIndex = state.findIndex((roi) => roi.id === action.targetId);
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return state;
+      const next = [...state];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    }
 
     case 'FOCUS': {
       const top = maxZ(state);

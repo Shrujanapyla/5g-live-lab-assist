@@ -97,6 +97,30 @@ async function main() {
       updatedData.snapshot.version
     );
 
+    // Test shared ROI drawing annotations.
+    const annotationUpdate = waitFor(student, "snapshot:updated");
+    professor.emit("snapshot:update", {
+      snapshotId,
+      data: {
+        title: "Updated Snapshot",
+        content: "Updated shared workspace",
+        image: "data:image/png;base64,dGVzdA==",
+        annotations: [
+          {
+            from: { x: 0.1, y: 0.2 },
+            to: { x: 0.8, y: 0.7 },
+            color: "#ff3333"
+          }
+        ]
+      },
+      expectedVersion: 2
+    });
+    const annotationData = await annotationUpdate;
+    if (annotationData.snapshot.data.annotations?.length !== 1) {
+      throw new Error("Snapshot drawing annotation was not synchronized.");
+    }
+    console.log("PASS: ROI drawing annotation synchronized.");
+
     // Test history retrieval.
     const historyReceived = waitFor(professor, "snapshot:history");
 
@@ -124,8 +148,8 @@ async function main() {
     if (restoredUpdateData.snapshot.data.title !== "Test Snapshot") {
       throw new Error("Restore did not recover the original snapshot data.");
     }
-    if (restoredUpdateData.snapshot.version !== 3) {
-      throw new Error("Restored snapshot version should be 3.");
+    if (restoredUpdateData.snapshot.version !== 4) {
+      throw new Error("Restored snapshot version should be 4.");
     }
 
     console.log("PASS: Previous version restored and broadcast.");

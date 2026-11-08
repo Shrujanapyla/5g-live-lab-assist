@@ -38,6 +38,7 @@ function toWorkspaceRoi(snapshot, index, history = []) {
       id: entry.historyId,
       snapshotId: snapshot.id,
       src: entry.snapshot.data.image,
+      annotations: entry.snapshot.data.annotations || [],
       capturedAt:
         entry.timestamp ||
         entry.snapshot.metadata?.createdAt ||
@@ -59,6 +60,7 @@ function toWorkspaceRoi(snapshot, index, history = []) {
           id: snapshot.id,
           snapshotId: snapshot.id,
           src: snapshot.data?.image || snapshot.image || '',
+          annotations: snapshot.data?.annotations || [],
           capturedAt:
             snapshot.metadata?.createdAt ||
             snapshot.createdAt ||
@@ -77,6 +79,7 @@ function toWorkspaceRoi(snapshot, index, history = []) {
     label: `ROI ${index + 1}`,
     snapshots: versions,
     activeSnapshotId: currentVersion?.id || versions[0]?.id,
+    backendVersion: snapshot.version,
   };
 }
 
@@ -115,14 +118,21 @@ export default function App() {
   // SOCKET CONNECTION
   // --------------------------------------------------
   useEffect(() => {
-    const newSocket = io(SERVER_URL);
-    setSocket(newSocket);
+  const newSocket = io(SERVER_URL);
 
-    newSocket.on("connect", () => setConnection("Connected"));
-    newSocket.on("disconnect", () => setConnection("Disconnected"));
-    newSocket.on("connect_error", () =>
-      setConnection("Connection failed")
-    );
+  newSocket.on("connect", () => {
+    setSocket(newSocket);
+    setConnection("Connected");
+  });
+  newSocket.on("disconnect", () => {
+    setSocket(null);
+    setConnection("Disconnected");
+  });
+
+  newSocket.on("connect_error", () => {
+    setSocket(null);
+    setConnection("Connection failed");
+  });
 
     newSocket.on("session-joined", (data) => {
       setParticipants(data.participants || []);
@@ -475,8 +485,24 @@ export default function App() {
 
   function stopDrawing(event) {
     if (isCapturing && selectionStartRef.current) {
-      updateRegionSelection(event);
+      const start = selectionStartRef.current;
+      const point = getCanvasPoint(event);
       selectionStartRef.current = null;
+
+      if (!point) {
+        setMessage("Could not read the selected region. Please try again.");
+        return;
+      }
+
+      const finalRect = {
+        x: Math.min(start.x, point.x),
+        y: Math.min(start.y, point.y),
+        width: Math.abs(point.x - start.x),
+        height: Math.abs(point.y - start.y),
+      };
+
+      setSelectionRect(finalRect);
+      saveSnapshot(finalRect);
       return;
     }
 
@@ -519,9 +545,7 @@ export default function App() {
     setSelectionRect(null);
     selectionStartRef.current = null;
     setIsCapturing(true);
-    setMessage(
-      "Drag over the live video to select a region, then click Save snapshot."
-    );
+    setMessage("Drag over the live video. The region saves automatically when you release the mouse.");
   }
 
   function cancelCaptureMode() {
@@ -531,16 +555,16 @@ export default function App() {
     setMessage("Region capture cancelled.");
   }
 
-  function saveSnapshot() {
+  function saveSnapshot(selectedRect = selectionRect) {
     const video = videoRef.current;
     const stage = canvasRef.current;
 
-    if (!video || !stage || !selectionRect || video.readyState < 2) {
+    if (!video || !stage || !selectedRect || video.readyState < 2) {
       setMessage("Select a region on the live video before saving.");
       return;
     }
 
-    if (selectionRect.width < 0.01 || selectionRect.height < 0.01) {
+    if (selectedRect.width < 0.01 || selectedRect.height < 0.01) {
       setMessage("The selected region is too small. Drag a larger rectangle.");
       return;
     }
@@ -570,10 +594,10 @@ export default function App() {
     const offsetX = (renderedWidth - stageRect.width) / 2;
     const offsetY = (renderedHeight - stageRect.height) / 2;
 
-    let sx = (selectionRect.x * stageRect.width + offsetX) / scale;
-    let sy = (selectionRect.y * stageRect.height + offsetY) / scale;
-    let sw = (selectionRect.width * stageRect.width) / scale;
-    let sh = (selectionRect.height * stageRect.height) / scale;
+    let sx = (selectedRect.x * stageRect.width + offsetX) / scale;
+    let sy = (selectedRect.y * stageRect.height + offsetY) / scale;
+    let sw = (selectedRect.width * stageRect.width) / scale;
+    let sh = (selectedRect.height * stageRect.height) / scale;
 
     sx = Math.max(0, Math.min(videoWidth, sx));
     sy = Math.max(0, Math.min(videoHeight, sy));
@@ -627,6 +651,52 @@ export default function App() {
     setSelectionRect(null);
     selectionStartRef.current = null;
     setMessage("Snapshot sent to the shared workspace.");
+  }
+
+  function uploadWorkspaceImage({ image, fileName, fileType }) {
+    if (role !== "professor") {
+      setMessage("Only the professor can upload shared ROI images.");
+      return;
+    }
+    if (!socket?.connected || !activeSession) {
+      setMessage("Join a session before uploading a shared image.");
+      return;
+    }
+    socket.emit("snapshot:create", {
+      data: { image },
+      metadata: {
+        source: "workspace-upload",
+        fileName,
+        fileType,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    setMessage(`Uploading ${fileName} to the shared workspace...`);
+  }
+
+  function updateWorkspaceSnapshot(roi, active, annotations) {
+    if (role !== "professor") {
+      setMessage("Only the professor can annotate shared snapshots.");
+      return;
+    }
+    if (!socket?.connected || !activeSession) {
+      setMessage("Join a session before updating a snapshot.");
+      return;
+    }
+    if (!roi?.backendId || !active?.snapshotId || !Number.isInteger(active.version)) {
+      setMessage("Could not identify the current snapshot version.");
+      return;
+    }
+
+    socket.emit("snapshot:update", {
+      snapshotId: roi.backendId,
+      data: {
+        image: active.src,
+        annotations: Array.isArray(annotations) ? annotations : [],
+      },
+      expectedVersion: active.version,
+    });
+    setMessage("Saving snapshot annotations...");
   }
 
   function restoreWorkspaceSnapshot(roi, version) {
@@ -824,7 +894,16 @@ export default function App() {
           onPointerDown={startDrawing}
           onPointerMove={continueDrawing}
           onPointerUp={stopDrawing}
-          onPointerCancel={stopDrawing}
+          onPointerCancel={(event) => {
+            if (isCapturing) {
+              selectionStartRef.current = null;
+              setSelectionRect(null);
+              setIsCapturing(false);
+              setMessage("Region capture cancelled.");
+            } else {
+              stopDrawing(event);
+            }
+          }}
           onLostPointerCapture={stopDrawing}
           style={{
             pointerEvents:
@@ -1041,24 +1120,15 @@ export default function App() {
               </button>
 
               {isCapturing && (
-                <>
-                  <button
-                    type="button"
-                    onClick={saveSnapshot}
-                    disabled={!selectionRect}
-                  >
-                    Save snapshot
-                  </button>
-                  <button type="button" onClick={cancelCaptureMode}>
-                    Cancel
-                  </button>
-                </>
+                <button type="button" onClick={cancelCaptureMode}>
+                  Cancel
+                </button>
               )}
             </div>
 
             {isCapturing && (
               <p className="muted">
-                Drag over the video to select the region you want to save.
+                Drag over the video and release. The selected region is saved automatically.
               </p>
             )}
           </div>
@@ -1088,8 +1158,12 @@ export default function App() {
             initialRois={getSnapshotsInCaptureOrder(snapshots).map((snapshot, index) =>
               toWorkspaceRoi(snapshot, index, snapshotHistory)
             )}
+            onUploadImage={uploadWorkspaceImage}
+            canUpload={role === "professor"}
             onRemoveRoi={removeWorkspaceRoi}
             onRestoreSnapshot={restoreWorkspaceSnapshot}
+            onUpdateSnapshot={updateWorkspaceSnapshot}
+            canAnnotate={role === "professor"}
             style={{ height: "720px", width: "100%" }}
           />
         </section>

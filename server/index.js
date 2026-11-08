@@ -262,6 +262,10 @@ io.on("connection", (socket) => {
       return sendSnapshotError(socket, "Join a session first.");
     }
 
+    if (socket.data.role !== "professor") {
+      return sendSnapshotError(socket, "Only the professor can create shared snapshots.");
+    }
+
     if (!isValidObject(data) || !isValidObject(metadata)) {
       return sendSnapshotError(socket, "Invalid snapshot data or metadata.");
     }
@@ -303,6 +307,10 @@ io.on("connection", (socket) => {
 
       if (!session) {
         return sendSnapshotError(socket, "Join a session first.");
+      }
+
+      if (socket.data.role !== "professor") {
+        return sendSnapshotError(socket, "Only the professor can update shared snapshots.");
       }
 
       const snapshot = session.snapshots.get(snapshotId);

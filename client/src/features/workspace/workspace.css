@@ -149,3 +149,132 @@
 @media (prefers-reduced-motion: no-preference) {
   .mrw-panel { transition: box-shadow 0.15s, border-color 0.15s; }
 }
+
+
+/* Snapshot annotation toolbar and shared ink overlay */
+.mrw-draw-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--mrw-border);
+  background: var(--mrw-surface);
+}
+.mrw-draw-toolbar input[type="color"] {
+  width: 32px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid var(--mrw-border);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.mrw-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.mrw-viewport.is-drawing {
+  cursor: crosshair;
+  touch-action: none;
+}
+.mrw-viewport__content {
+  width: 100%;
+  height: 100%;
+}
+.mrw-ink {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.mrw-viewport.is-drawing .mrw-ink {
+  pointer-events: all;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Expanded ROI panel and reliable header controls */
+.mrw-panel.is-expanded {
+  position: absolute;
+  inset: 8px !important;
+  width: auto !important;
+  height: auto !important;
+  z-index: 10000 !important;
+}
+.mrw-panel__header button {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+}
+.mrw-panel__expand {
+  font-size: 15px;
+  min-width: 26px;
+}
+
+
+/* Scrollable stacked ROI cards: no overlap, all regions remain visible. */
+.mrw.is-stacked .mrw-canvas {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+  padding: 14px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+.mrw.is-stacked .mrw-panel,
+.mrw.is-stacked .mrw-panel.is-focused {
+  position: relative;
+  inset: auto;
+  z-index: auto !important;
+  display: flex;
+  flex: 0 0 auto;
+  width: 100%;
+  height: 560px;
+  min-height: 420px;
+  max-height: 1100px;
+  resize: vertical;
+  overflow: hidden;
+  margin: 0;
+}
+.mrw.is-stacked .mrw-panel__header { cursor: default; touch-action: auto; }
+.mrw.is-stacked .mrw-panel__header:active { cursor: default; }
+.mrw.is-stacked .mrw-viewport { min-height: 180px; }
+.mrw.is-stacked .mrw-notes,
+.mrw.is-stacked .mrw-history,
+.mrw.is-stacked .mrw-history__empty { max-height: 180px; }
+.mrw.is-stacked .mrw-empty { position: static; padding: 40px 0; }
+.mrw.is-stacked .mrw-panel.is-expanded {
+  position: relative !important;
+  inset: auto !important;
+  width: 100% !important;
+  height: 850px !important;
+  max-height: none;
+  z-index: auto !important;
+}
+@media (max-width: 700px) {
+  .mrw.is-stacked .mrw-panel { height: 480px; min-height: 380px; }
+  .mrw.is-stacked .mrw-panel.is-expanded { height: 720px !important; }
+}
+
+
+/* Keep ROI cards in a scrollable vertical stack and make the grip discoverable. */
+.mrw.is-stacked .mrw-grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+}
+.mrw.is-stacked .mrw-grip:active { cursor: grabbing; }
+.mrw.is-stacked .mrw-panel[draggable="true"] { cursor: default; }
+.mrw.is-stacked .mrw-panel.is-expanded {
+  flex-basis: auto;
+}
+.mrw.is-stacked .mrw-panel__header { cursor: default; }

@@ -23,8 +23,12 @@ const MultiRoiWorkspace = forwardRef(function MultiRoiWorkspace(
     initialRois = [],
     onChange,
     onCaptureSnapshot,
+    onUploadImage,
+    canUpload = true,
     onRemoveRoi,
     onRestoreSnapshot,
+    onUpdateSnapshot,
+    canAnnotate = false,
     className = '',
     style,
   },
@@ -42,10 +46,12 @@ const MultiRoiWorkspace = forwardRef(function MultiRoiWorkspace(
   const fileRef = useRef(null);
   const roisRef = useRef(rois);
 
-  roisRef.current = rois;
-
   const onChangeRef = useRef(onChange);
+
+useLayoutEffect(() => {
+  roisRef.current = rois;
   onChangeRef.current = onChange;
+}, [rois, onChange]);
 
   useEffect(() => {
     onChangeRef.current?.(rois);
@@ -155,15 +161,16 @@ const MultiRoiWorkspace = forwardRef(function MultiRoiWorkspace(
     for (const file of files) {
       const src = await readFileAsDataUrl(file);
 
-      dispatch({
-        type: 'ADD',
-        roi: {
-          src,
-          label: file.name.replace(/\.[^.]+$/, ''),
-        },
-      });
+      if (onUploadImage) {
+        await onUploadImage({ image: src, fileName: file.name, fileType: file.type });
+      } else {
+        dispatch({
+          type: 'ADD',
+          roi: { src, label: file.name.replace(/\.[^.]+$/, '') },
+        });
+      }
     }
-  }, []);
+  }, [onUploadImage]);
 
   const handleRemove = useCallback(
     (roi) => {
@@ -182,7 +189,7 @@ const MultiRoiWorkspace = forwardRef(function MultiRoiWorkspace(
 
   return (
     <div
-      className={`mrw ${compact ? 'is-compact' : ''} ${className}`}
+      className={`mrw is-stacked ${compact ? 'is-compact' : ''} ${className}`}
       style={style}
     >
       <div className="mrw-toolbar">
@@ -196,37 +203,24 @@ const MultiRoiWorkspace = forwardRef(function MultiRoiWorkspace(
 
         <div className="mrw-toolbar__spacer" />
 
-        {!compact && rois.length > 1 && (
+        {canUpload && (
           <button
             type="button"
-            className="mrw-btn"
-            onClick={() =>
-              dispatch({
-                type: 'TILE',
-                bounds,
-              })
-            }
+            className="mrw-btn mrw-btn--primary"
+            onClick={() => fileRef.current?.click()}
           >
-            Tile panels
+            + Add ROI
           </button>
         )}
 
-        <button
-          type="button"
-          className="mrw-btn mrw-btn--primary"
-          onClick={() => fileRef.current?.click()}
-        >
-          + Add ROI
-        </button>
-
-        <input
+        {canUpload && <input
           ref={fileRef}
           type="file"
           accept="image/*"
           multiple
           hidden
           onChange={onAddFiles}
-        />
+        />}
       </div>
 
       <div ref={canvasRef} className="mrw-canvas">
@@ -246,10 +240,13 @@ const MultiRoiWorkspace = forwardRef(function MultiRoiWorkspace(
             bounds={bounds}
             compact={compact}
             focused={roi.z === topZ && rois.length > 1}
+            stacked
             dispatch={dispatch}
             onCapture={onCaptureSnapshot}
             onRemove={() => handleRemove(roi)}
             onRestoreSnapshot={onRestoreSnapshot}
+            onUpdateSnapshot={onUpdateSnapshot}
+            canAnnotate={canAnnotate}
           />
         ))}
       </div>

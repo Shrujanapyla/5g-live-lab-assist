@@ -8,6 +8,25 @@ const RTC_CONFIG = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
+// Keep ROI numbers in the order snapshots were originally captured.
+// The backend snapshot list is newest-first, so never use its array index
+// directly when assigning an ROI label.
+function getSnapshotsInCaptureOrder(list = []) {
+  return list
+    .map((snapshot, originalIndex) => ({ snapshot, originalIndex }))
+    .sort((a, b) => {
+      const aTime = new Date(
+        a.snapshot.metadata?.createdAt || a.snapshot.createdAt || 0
+      ).getTime();
+      const bTime = new Date(
+        b.snapshot.metadata?.createdAt || b.snapshot.createdAt || 0
+      ).getTime();
+
+      return aTime - bTime || a.originalIndex - b.originalIndex;
+    })
+    .map(({ snapshot }) => snapshot);
+}
+
 function toWorkspaceRoi(snapshot, index, history = []) {
   const matchingHistory = history
     .filter(
@@ -271,7 +290,7 @@ export default function App() {
       }
     });
 
-    snapshots.forEach((snapshot, index) => {
+    getSnapshotsInCaptureOrder(snapshots).forEach((snapshot, index) => {
       workspace.upsertRoi(
         toWorkspaceRoi(snapshot, index, snapshotHistory)
       );
@@ -1066,7 +1085,7 @@ export default function App() {
           <MultiRoiWorkspace
             key={activeSession}
             ref={workspaceRef}
-            initialRois={snapshots.map((snapshot, index) =>
+            initialRois={getSnapshotsInCaptureOrder(snapshots).map((snapshot, index) =>
               toWorkspaceRoi(snapshot, index, snapshotHistory)
             )}
             onRemoveRoi={removeWorkspaceRoi}
